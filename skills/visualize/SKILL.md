@@ -18,11 +18,13 @@ This teaching system builds a **dependency graph in the learner's head** — axi
 
 Do NOT visualize when prose or a single equation already carries it. A decorative diagram that just restates the sentence next to it adds noise and a chance to be wrong. When in doubt, don't — a missing visual is cheaper than a false one.
 
+**And not every picture needs a maker.** Plain nodes-and-edges with short labels and no math is a ```mermaid``` fence you write by hand. Come here when the picture needs a *rendering* guarantee: a formula in a label, exact geometry, a layout to confirm by eye.
+
 ## Choose the maker
 
-Two makers, discovered from `.pi/agents/`:
+Two makers, discovered from `.claude/agents/`:
 
-- **`mermaid-maker`** — structural/relational visuals: dependency graphs, flowcharts, sequence/state/ER/class diagrams, trees, mindmaps, timelines. This is the default and fits the dependency-graph pedagogy directly.
+- **`mermaid-maker`** — structural/relational visuals: flowcharts, sequence/state/ER/class diagrams, trees, mindmaps, timelines. The default of the two.
 - **`svg-maker`** — spatial/geometric visuals Mermaid can't lay out: exact coordinates, geometry figures, number lines, vectors, plots, custom shapes.
 
 Rule of thumb: if it's *nodes-and-edges / relationships*, use mermaid-maker. If it's *positions-and-shapes / geometry*, use svg-maker.
@@ -38,23 +40,29 @@ Give the maker the concept AND the concrete elements you want — not a vague to
 
 Keep the idea intact but trust the maker to compose; if your brief lists more than ~5–7 elements, cut it first.
 
+Write the brief in the language of the lesson — labels inside the picture are read by the learner, not by you.
+
+Describe elements by role, never by color. The renderer owns the palette on a dark plate, so "white fill" or "black dots" cannot be done as asked — the maker has to deviate and explain. "An empty depletion layer" or "two dots on each bond" carries the same idea and survives the palette.
+
 ## Invoke
 
-Dispatch the maker with the `subagent` tool:
+Dispatch the maker with the `Agent` tool, naming it in `subagent_type`:
 
 ```
-subagent(agent="mermaid-maker", task="<your minimal, concrete brief>")
+Agent(subagent_type="mermaid-maker", description="Diagram <topic>", prompt="<your minimal, concrete brief>")
 ```
 ```
-subagent(agent="svg-maker", task="<your minimal, concrete brief>")
+Agent(subagent_type="svg-maker", description="Draw <topic>", prompt="<your minimal, concrete brief>")
 ```
 
-The maker owns its own purpose-built tools (`write_*`/`edit_*`/`render_*`) — it authors the source, renders it to a PNG, **looks at the PNG and iterates until it is correct and clean**, publishes it into the vault with a unique filename, and returns:
+**The maker runs in the background, and silently.** Dispatch it and keep teaching; never tell the learner a picture is being made or is ready, and answer its completion notification with the single character `⏳` and nothing else (a turn can't be empty; md-log drops exactly this paragraph from the note). They meet only the finished embed.
+
+The maker owns the whole authoring loop — it writes the source with `Write`/`Edit`, renders it to a PNG with the project's render script, **looks at the PNG with `Read` and iterates until it is correct and clean**, publishes it into the vault with a unique filename, and returns:
 
 ```
 RESULT:
 filename: viz-<slug>-<timestamp>.png
-path: <cwd>/viz/viz-<slug>-<timestamp>.png
+path: <imgDir>/viz-<slug>-<timestamp>.png
 ```
 
 If it returns `RESULT: NONE`, it couldn't make a correct picture of the brief — simplify or rethink, or decide the visual isn't worth it. Never hand-author or fake a diagram yourself; correctness depends on the maker's render-and-inspect loop.
@@ -67,7 +75,7 @@ Put the embed directly in your teaching reply, using Obsidian's wikilink embed w
 ![[viz-<slug>-<timestamp>.png|500]]
 ```
 
-That's all. The `md-log` extension mirrors your reply text verbatim into the linked `.md`, and Obsidian resolves the embed by filename anywhere in the vault (the maker saves into the project's `viz` folder, which is inside the vault) — so it renders inline in the lesson automatically. Width `|500` is a good default; use larger for dense diagrams. Introduce the visual in a sentence, then let it carry the idea — don't narrate every element back in prose.
+That's all. The `md-log` hooks mirror your reply text verbatim into the linked `.md`, and Obsidian resolves the embed by filename anywhere in the vault (the maker saves into the folder configured as `imgDir`, which is inside the vault) — so it renders inline in the lesson automatically. Width `|500` is a good default; use larger for dense diagrams. Introduce the visual in a sentence, then let it carry the idea — don't narrate every element back in prose.
 
 ## Why this is reliable
 
@@ -75,4 +83,4 @@ That's all. The `md-log` extension mirrors your reply text verbatim into the lin
 - PNG embed means **what the maker verified is pixel-identical to what the learner sees** — no re-render drift.
 - Unique filenames keep Obsidian's by-filename embed resolution unambiguous.
 
-> The makers render through the project's `visual-tools` extension (Mermaid via a bundled `@mermaid-js/mermaid-cli` + installed Chrome; SVG via `rsvg-convert`, fallback ImageMagick). You don't render anything yourself — you only brief the maker and embed the filename it returns.
+> The makers render through `.claude/scripts/render-viz.mjs` — a vendored Mermaid bundle plus installed Chrome, which rasterizes hand-written SVG the same way. You don't render anything yourself — you only brief the maker and embed the filename it returns.

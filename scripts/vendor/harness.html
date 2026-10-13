@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>viz harness</title>
+<style>
+  /* The page is transparent; #out paints the plate itself. The screenshot is
+     taken per element, and behind its rounded corners there must be
+     transparency, not a white corner — so the background lives on the element,
+     not on body. */
+  html, body { margin: 0; padding: 0; background: transparent; }
+  /* A dark plate with light ink: the reader's Obsidian theme is always dark,
+     and an image on a transparent background would glow with foreign fills.
+     The plate is slightly lighter than the Obsidian page (#1e1e1e) — it reads
+     as a card, not a hole. Padding becomes the PNG margins, not an empty frame. */
+  #out { display: inline-block; background: #22262c; padding: 16px; border-radius: 10px; }
+  #out svg { display: block; }
+
+  /* The hand-written SVG palette (ADR 0023). svg-maker knows no hex values —
+     it writes `class="…"` next to `fill="currentColor"`/`stroke="currentColor"`,
+     or just `class="fill-soft"` with no colour attribute at all. The source
+     check (render.mjs) separately forbids any explicit colour other than
+     `currentColor`/`none`, so these classes cannot be swapped for a literal hex. */
+  #out svg { color: #e6e8eb; }              /* ink — the default colour */
+  #out svg .ink { color: #e6e8eb; }         /* ink, as an explicit class */
+  #out svg .muted { color: #9aa1ab; }       /* muted — secondary lines and text */
+  #out svg .accent { color: #6ea8fe; }      /* accent — at most one per visual */
+  #out svg .accent2 { color: #e3b341; }     /* second accent — distinct from the first */
+  #out svg .correct { color: #3fb950; }     /* "correct" */
+  #out svg .incorrect { color: #f85149; }   /* "incorrect" */
+  #out svg .fill-soft { fill: rgba(230, 232, 235, 0.14); } /* soft fill of an area */
+  /* A label without `fill` is painted with ink. SVG's default fill is black, and
+     `color` is picked up only by `fill="currentColor"`: a forgotten attribute
+     gave black text on the dark plate. An explicit `fill` on a label stays as written. */
+  #out[data-kind="svg"] text:not([fill]) { fill: currentColor; }
+</style>
+</head>
+<body>
+<div id="out"></div>
+<script src="./mermaid.min.js"></script>
+<script>
+/*
+ * The render page. The source arrives in the URL fragment (`#<encodeURIComponent
+ * JSON>`), the result is put into #out, and render-viz.mjs takes it as a
+ * per-element screenshot. Readiness and errors are published to window.__viz —
+ * the script polls only that field and knows nothing else about the page.
+ */
+window.__viz = { state: "pending", error: null, metrics: null, log: [], emitted: null };
+
+function fail(message) {
+  window.__viz.error = String(message || "unknown error");
+  window.__viz.state = "error";
+}
+
+/* The listener is installed before the source is inserted: a script inside the
+   SVG runs synchronously, and an exception it throws arrives here, not in the
+   try below. */
+window.addEventListener("error", function (e) {
+  if (window.__viz.state === "pending") fail(e.message);
+});
+
+/* Output of the image's script: render-viz prints it after the metrics. Without
+   this channel the makers go off to compute check numbers outside — `node -e`
+   and heredocs, each with its own permission request. */
+(function () {
+  var real = console.log;
+  console.log = function () {
+    try {
+      var parts = [];
+      for (var i = 0; i < arguments.length; i++) parts.push(String(arguments[i]));
+      if (window.__viz.log.length < 200) window.__viz.log.push(parts.join(" "));
+    } catch (e) {
+      // The log is a convenience, not part of the render: stay silent.
+    }
+    real.apply(console, arguments);
+  };
+})();
+
+/**
+ * The spec marks scripts that got into the DOM via innerHTML as non-executable.
+ * We recreate the node: the copy runs synchronously and sees the already
+ * assembled document, so svg-maker computes geometry here, in the browser
+ * sandbox, instead of running the computation on the user's machine.
+ */
+function runScripts(root) {
+  var nodes = root.querySelectorAll("script");
+  var count = nodes.length;
+  for (var i = 0; i < count; i++) {
+    var old = nodes[i];
+    var fresh = document.createElementNS(old.namespaceURI, "script");
+    for (var j = 0; j < old.attributes.length; j++) {
+      var attr = old.attributes[j];
+      fresh.setAttributeNS(attr.namespaceURI, attr.name, attr.value);
+    }
+    fresh.textContent = old.textContent;
+    old.parentNode.replaceChild(fresh, old);
+  }
+  return count;
+}
+
+/** Dimensions from the viewBox: the only source that is always there. */
+function viewBoxSize(el) {
+  var vb = (el.getAttribute("viewBox") || "").trim().split(/[\s,]+/).map(Number);
+  if (vb.length !== 4 || !vb.every(isFinite) || !(vb[2] > 0) || !(vb[3] > 0)) return null;
+  return { w: vb[2], h: vb[3] };
+}
+
+function numericAttr(el, name) {
+  var v = el.getAttribute(name);
+  return v !== null && /^\d+(\.\d+)?(px)?$/.test(v.trim());
+}
+
+/**
+ * Bring the element to a predictable box. Without this mermaid emits
+ * `width="100%"` with `style="max-width"`, and some diagrams a viewBox with a
+ * negative origin and no height at all: the element's box then does not match
+ * its content, and the screenshot comes out empty.
+ *
+ * For mermaid the size is always taken from the viewBox. A hand-written SVG with
+ * its own numeric width/height stays as written — that is the whole point of
+ * svg-maker.
+ */
+function normalize(el, kind) {
+  var size = viewBoxSize(el);
+  var authored = numericAttr(el, "width") && numericAttr(el, "height");
+  if (kind === "svg" && authored) return;
+  if (!size) return;
+  el.setAttribute("width", String(size.w));
+  el.setAttribute("height", String(size.h));
+  el.style.maxWidth = "none";
+  el.style.width = size.w + "px";
+  el.style.height = size.h + "px";
+}
+
+(async function () {
+  try {
+    var hash = location.hash.slice(1);
+    if (!hash) throw new Error("no payload in the URL fragment");
+    var payload = JSON.parse(decodeURIComponent(hash));
+    var out = document.getElementById("out");
+    out.setAttribute("data-kind", payload.kind);
+
+    var scripted = 0;
+    if (payload.kind === "svg") {
+      out.innerHTML = payload.source;
+      scripted = runScripts(out);
+      // The script may have failed: the listener above already caught its
+      // exception, and there is nothing to finish drawing from half a document.
+      if (window.__viz.state === "error") return;
+    } else {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: "base",
+        look: "classic",
+        layout: "dagre",
+        securityLevel: "strict",
+        // The palette is built for the #out plate. The default theme bakes in
+        // light node fills, and on a dark Obsidian page the image glares.
+        themeVariables: {
+          darkMode: true,
+          background: "#22262c",
+          primaryColor: "#2c313a",
+          primaryBorderColor: "#454b55",
+          primaryTextColor: "#e6e8eb",
+          lineColor: "#9aa1ab",
+          secondaryColor: "#262b32",
+          tertiaryColor: "#20242a",
+          edgeLabelBackground: "#22262c",
+        },
+      });
+      var rendered = await mermaid.render("viz-" + Date.now(), payload.source);
+      out.innerHTML = rendered.svg;
+    }
+
+    var el = out.querySelector("svg");
+    if (!el) throw new Error("the source produced no <svg> element");
+    normalize(el, payload.kind);
+
+    if (document.fonts && document.fonts.ready) await document.fonts.ready;
+
+    var rect = el.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) throw new Error("the rendered <svg> has zero size");
+
+    // The markup after the script has run: a computed image gets its coordinates
+    // only here, and the maker needs to read them. Without a script there is
+    // nothing to hand back — exactly this is already on disk.
+    if (scripted) window.__viz.emitted = el.outerHTML;
+    window.__viz.metrics = {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      // Labels are either <text> or <foreignObject> (mermaid's htmlLabels) —
+      // count both: this is an indicator "the frame has content", not statistics.
+      texts: el.querySelectorAll("text, foreignObject").length,
+    };
+    window.__viz.state = "ok";
+  } catch (e) {
+    // A mermaid error is returned as text with the line number, if there is one.
+    var msg = e && e.message ? e.message : String(e);
+    if (e && e.hash && e.hash.line) msg = "line " + e.hash.line + ": " + msg;
+    fail(msg);
+  }
+})();
+</script>
+</body>
+</html>
