@@ -51,7 +51,7 @@ A set of Claude Code hooks writes the session into a note as it goes: your messa
 1. This repo **is** a `.claude` directory. From the root of the folder you will launch Claude Code from, clone it as `.claude`:
 
    ```bash
-   git clone git clone https://github.com/GillGate/learn-with-claude .claude
+   git clone https://github.com/GillGate/learn-with-claude .claude
    ```
 
 2. Set the folders in `.claude/md-log.config.json`:
